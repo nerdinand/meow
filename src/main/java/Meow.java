@@ -1,113 +1,58 @@
 import be.tarsos.dsp.AudioDispatcher;
-import be.tarsos.dsp.AudioEvent;
-import be.tarsos.dsp.AudioProcessor;
 import be.tarsos.dsp.io.TarsosDSPAudioFormat;
 import be.tarsos.dsp.io.jvm.AudioPlayer;
 import be.tarsos.dsp.io.jvm.JVMAudioInputStream;
-import be.tarsos.dsp.pitch.PitchDetectionHandler;
-import be.tarsos.dsp.pitch.PitchDetectionResult;
 import be.tarsos.dsp.pitch.PitchProcessor;
-import be.tarsos.dsp.writer.WriterProcessor;
 
 import javax.sound.sampled.*;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 
-public class Meow implements PitchDetectionHandler {
-    private static final double SILENCE_THRESHOLD = 0.5;
+public class Meow {
+    private static final int SAMPLE_SIZE_IN_BITS = 16;
+    private static final int CHANNELS = 1;
+    private static final boolean SIGNED = true;
+    private static final boolean BIG_ENDIAN = false;
+    private static final float SAMPLE_RATE = 44100;
+    private static final int AUDIO_BUFFER_SIZE = 512;
+    public static final int BUFFER_OVERLAP = 0;
+
     private AudioDispatcher dispatcher;
-    private float lastMeowTimestamp = Float.MIN_VALUE;
-    private int meowCount = 0;
-    private AudioFormat audioFormat;
+    private AudioFormat audioFormat = new AudioFormat(SAMPLE_RATE, SAMPLE_SIZE_IN_BITS, CHANNELS, SIGNED, BIG_ENDIAN);
 
     public static void main(String[] args) {
         Meow meow = new Meow();
         meow.go();
     }
 
-    private void go() {
-        AudioInputStream audioInputStream = null;
+    public void go() {
+        TarsosDSPAudioFormat tarsosDSPAudioFormat = JVMAudioInputStream.toTarsosDSPFormat(audioFormat);
+        MeowdioEvent.tarsosDSPAudioFormat = tarsosDSPAudioFormat;
+
+        AudioInputStream audioInputStream;
+        JVMAudioInputStream jvmAudioInputStream = null;
+
         try {
             audioInputStream = AudioSystem.getAudioInputStream(new File("/Users/ferdi/Desktop/brienne-meow-mono.wav"));
-        } catch (UnsupportedAudioFileException e) {
-            e.printStackTrace();
-        } catch (IOException e) {
+            jvmAudioInputStream = new JVMAudioInputStream(audioInputStream);
+        } catch (UnsupportedAudioFileException | IOException e) {
             e.printStackTrace();
         }
-        JVMAudioInputStream jvmAudioInputStream = new JVMAudioInputStream(audioInputStream);
-        float sampleRate = 44100;
-        audioFormat = new AudioFormat(sampleRate, 16, 1, true, false);
 
-        int audioBufferSize = 512;
-        dispatcher = new AudioDispatcher(jvmAudioInputStream, audioBufferSize, 0);
+        dispatcher = new AudioDispatcher(jvmAudioInputStream, AUDIO_BUFFER_SIZE, BUFFER_OVERLAP);
         try {
             dispatcher.addAudioProcessor(new AudioPlayer(audioFormat));
         } catch (LineUnavailableException e) {
             e.printStackTrace();
         }
 
-        PitchProcessor.PitchEstimationAlgorithm algorithm = PitchProcessor.PitchEstimationAlgorithm.YIN;
-        dispatcher.addAudioProcessor(new PitchProcessor(algorithm, sampleRate, audioBufferSize, this));
-        dispatcher.addAudioProcessor(new BufferProcessor());
+        MeowPitchDetector meowPitchDetector = new MeowPitchDetector(dispatcher);
+        RingBufferProcessor ringBufferProcessor = new RingBufferProcessor(tarsosDSPAudioFormat);
+
+        dispatcher.addAudioProcessor(new PitchProcessor(PitchProcessor.PitchEstimationAlgorithm.YIN, SAMPLE_RATE, AUDIO_BUFFER_SIZE, meowPitchDetector));
+        dispatcher.addAudioProcessor(ringBufferProcessor);
+        dispatcher.addAudioProcessor(new MeowdioWriter(meowPitchDetector, ringBufferProcessor));
         dispatcher.run();
     }
 
-    @Override
-    public void handlePitch(PitchDetectionResult pitchDetectionResult, AudioEvent audioEvent) {
-        boolean meowing;
-        if (pitchDetectionResult.isPitched()) {
-            float currentTimestamp = dispatcher.secondsProcessed();
-            if ((currentTimestamp - lastMeowTimestamp) > SILENCE_THRESHOLD) {
-                meowCount += 1;
-                meowing = true;
-            }
-            System.out.println(meowCount + ": " + pitchDetectionResult.getPitch());
-            lastMeowTimestamp = currentTimestamp;
-        } else {
-            meowing = false;
-        }
-    }
-
-    private class BufferProcessor implements AudioProcessor {
-        private final LimitedQueue<AudioEvent> limitedQueue;
-        private final TarsosDSPAudioFormat tarsosDSPFormat;
-        private int lastMeowCount = 1;
-        private WriterProcessor writerProcessor;
-
-        BufferProcessor() {
-            limitedQueue = new LimitedQueue<>(50);
-            tarsosDSPFormat = JVMAudioInputStream.toTarsosDSPFormat(audioFormat);
-        }
-
-        @Override
-        public boolean process(AudioEvent audioEvent) {
-            AudioEvent audioEventClone = new AudioEvent(tarsosDSPFormat);
-            audioEventClone.setFloatBuffer(audioEvent.getFloatBuffer().clone());
-            limitedQueue.offer(audioEventClone);
-
-            try {
-                if (lastMeowCount != meowCount) {
-                    writerProcessor = new WriterProcessor(
-                            tarsosDSPFormat, new RandomAccessFile("meow" + meowCount + ".wav", "rw")
-                    );
-
-                    for (AudioEvent a : limitedQueue) {
-                        writerProcessor.process(a);
-                    }
-                    writerProcessor.processingFinished();
-                }
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
-
-            lastMeowCount = meowCount;
-            return false;
-        }
-
-        @Override
-        public void processingFinished() {
-        }
-    }
 }
