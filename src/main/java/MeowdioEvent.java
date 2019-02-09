@@ -40,7 +40,7 @@ class MeowdioEvent implements AudioProcessor {
     }
 
     boolean isFinished() {
-        return finishingAudioEventCount >= EVENTS_AFTER;
+        return finishingAudioEventCount >= eventsAfter;
     }
 
     boolean isFinishing() {
